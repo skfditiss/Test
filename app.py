@@ -1,111 +1,111 @@
-import logging
+import os
 from flask import Flask, jsonify, request
-import unittest
+import sqlite3
+import logging
+import random
+import string
 
-# Configure logging for the app
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
-
-# Create the Flask app
 app = Flask(__name__)
 
-# Simple in-memory storage for users
-users = []
+# Vulnerable: Insecure secret key, hardcoded in the code
+app.secret_key = "supersecretkey"
 
-# Data Models
-class User:
-    def __init__(self, name, email):
-        self.name = name
-        self.email = email
+# Vulnerable: SQLite database with no encryption and no input sanitization
+DATABASE = 'app.db'
 
-    def to_dict(self):
-        return {
-            "name": self.name,
-            "email": self.email
-        }
+# Vulnerable: Insecure logging setup, sensitive data logged
+logging.basicConfig(level=logging.DEBUG)
 
-# Business Logic
-class UserService:
-    @staticmethod
-    def add_user(users, name, email):
-        user = User(name, email)
-        users.append(user)
-        return user
+# Vulnerable: Weak password hashing (no hashing done at all)
+users_db = {"admin": "password123"}
 
-    @staticmethod
-    def get_user(users, name):
-        return next((user for user in users if user.name == name), None)
+# Vulnerable: Insecure cookie handling, no secure flags
+@app.route('/login', methods=['POST'])
+def login():
+    username = request.form.get('username')
+    password = request.form.get('password')
+    
+    if username in users_db and users_db[username] == password:
+        response = jsonify({"message": "Login successful"})
+        response.set_cookie("user", username)  # Vulnerable cookie (no secure or httponly flags)
+        return response
+    return jsonify({"message": "Invalid credentials"}), 401
 
-# Routes
-@app.route('/')
-def index():
-    return jsonify({"message": "Welcome to the Flask SonarQube Testing App"})
+# Vulnerable: Insecure random token generation (predictable)
+def generate_token():
+    return ''.join(random.choices(string.ascii_lowercase + string.digits, k=16))
 
+# Vulnerable: Insecure SQL query with user input directly (SQL injection)
+@app.route('/user_data', methods=['GET'])
+def get_user_data():
+    user_id = request.args.get('user_id')  # Vulnerable to SQL injection
+    connection = sqlite3.connect(DATABASE)
+    cursor = connection.cursor()
+    cursor.execute(f"SELECT * FROM users WHERE id = {user_id}")  # SQL Injection
+    result = cursor.fetchone()
+    connection.close()
+    
+    if result:
+        return jsonify({"user": result})
+    return jsonify({"message": "User not found"}), 404
 
-@app.route('/users', methods=['GET'])
-def get_users():
-    return jsonify({"users": [user.to_dict() for user in users]})
+# Vulnerable: Sensitive data stored in plain text (API key hardcoded)
+@app.route('/get_api_data', methods=['GET'])
+def get_api_data():
+    api_key = "my_secret_api_key"  # Sensitive data hardcoded
+    if request.headers.get('API-Key') == api_key:
+        return jsonify({"data": "Sensitive API data"})
+    return jsonify({"message": "Unauthorized"}), 403
 
+# Vulnerable: Insecure file upload without validation
+@app.route('/upload', methods=['POST'])
+def upload_file():
+    file = request.files.get('file')
+    
+    # Vulnerable: No file type validation, could upload dangerous files like .exe
+    file.save(os.path.join('/tmp', file.filename))  # Insecure file save location
+    return jsonify({"message": "File uploaded successfully"})
 
-@app.route('/users', methods=['POST'])
-def add_user():
-    user_data = request.get_json()
-    if "name" not in user_data or "email" not in user_data:
-        return jsonify({"error": "Missing required fields"}), 400
-    user = UserService.add_user(users, user_data["name"], user_data["email"])
-    logger.info(f"Added user: {user.name}")
-    return jsonify({"message": "User added successfully", "user": user.to_dict()}), 201
+# Vulnerable: Missing exception handling, sensitive details exposed
+@app.route('/dangerous', methods=['GET'])
+def dangerous_function():
+    # Vulnerable: Division by zero error, sensitive traceback could be exposed
+    x = 1 / 0  # This will raise ZeroDivisionError
+    return jsonify({"result": x})
 
+# Vulnerable: Insecure JWT generation, token not properly signed
+@app.route('/generate_token', methods=['POST'])
+def generate_jwt_token():
+    user_data = request.json
+    token = generate_token()  # Vulnerable token generation
+    return jsonify({"token": token})
 
-@app.route('/users/<string:name>', methods=['GET'])
-def get_user(name):
-    user = UserService.get_user(users, name)
-    if not user:
-        return jsonify({"error": "User not found"}), 404
-    return jsonify({"user": user.to_dict()})
+# Vulnerable: XSS (Cross-site Scripting) in response rendering
+@app.route('/hello', methods=['GET'])
+def hello():
+    user_input = request.args.get('name')
+    # Vulnerable: No escaping of user input, XSS risk
+    return f"<h1>Hello, {user_input}</h1>"
 
+# Vulnerable: Insecure session management (no expiration time)
+@app.route('/get_session_data', methods=['GET'])
+def get_session_data():
+    session_data = request.cookies.get('user')
+    if session_data:
+        return jsonify({"message": f"Hello {session_data}"})
+    return jsonify({"message": "Session expired"}), 401
 
-# Unit Tests
-class FlaskAppTest(unittest.TestCase):
-    @classmethod
-    def setUpClass(cls):
-        cls.client = app.test_client()
+# Vulnerable: Insecure password management (no salt or hashing)
+@app.route('/change_password', methods=['POST'])
+def change_password():
+    username = request.form.get('username')
+    new_password = request.form.get('new_password')
+    
+    if username in users_db:
+        users_db[username] = new_password  # Vulnerable: Password is stored as plain text
+        return jsonify({"message": "Password changed successfully"})
+    return jsonify({"message": "User not found"}), 404
 
-    def test_home(self):
-        response = self.client.get('/')
-        self.assertEqual(response.status_code, 200)
-        self.assertIn('Welcome to the Flask SonarQube Testing App', response.get_data(as_text=True))
-
-    def test_add_user(self):
-        user_data = {
-            "name": "John Doe",
-            "email": "johndoe@example.com"
-        }
-        response = self.client.post('/users', json=user_data)
-        self.assertEqual(response.status_code, 201)
-        self.assertIn('User added successfully', response.get_data(as_text=True))
-
-    def test_get_users(self):
-        response = self.client.get('/users')
-        self.assertEqual(response.status_code, 200)
-        self.assertIn('users', response.get_json())
-
-    def test_get_user(self):
-        response = self.client.get('/users/John Doe')
-        self.assertEqual(response.status_code, 200)
-        self.assertIn('John Doe', response.get_json()['user']['name'])
-
-    def test_user_not_found(self):
-        response = self.client.get('/users/Nonexistent User')
-        self.assertEqual(response.status_code, 404)
-        self.assertIn('User not found', response.get_data(as_text=True))
-
-
-# SonarQube Configuration (For reference, not functional in this script)
-# Create a sonar-project.properties file in the root directory to configure the SonarQube scanner.
-# You can run sonar-scanner after running tests to upload results to SonarQube.
-
-# Main entry point for the app
 if __name__ == '__main__':
-    app.run(debug=True)
-
+    # Vulnerable: Default Flask config
+    app.run(debug=True)  # debug=True leaks sensitive information in error pages
